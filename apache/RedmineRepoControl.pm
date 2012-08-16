@@ -53,18 +53,6 @@ my @directives = (
         args_how     => TAKE1,
         errmsg => 'RedmineCacheCredsMax must be a decimal number',
     },
-    {
-        name         => 'RedmineSelfLogin',
-        req_override => OR_AUTHCFG,
-        args_how     => TAKE1,
-        errmsg => 'RedmineCacheCredsMax must be a decimal number',
-    },
-    {
-        name         => 'RedmineSelfPassword',
-        req_override => OR_AUTHCFG,
-        args_how     => TAKE1,
-        errmsg => 'RedmineCacheCredsMax must be a decimal number',
-    },
 );
 
 sub RedmineDSN {
@@ -99,9 +87,6 @@ sub RedmineCacheCredsMax {
         $self->{RedmineCacheCredsMax} = $arg;
     }
 }
-
-sub RedmineSelfLogin { set_val('RedmineSelfLogin', @_); }
-sub RedmineSelfPassword { set_val('RedmineSelfPassword', @_); }
 
 sub trim {
     my $string = shift;
@@ -177,9 +162,6 @@ sub authen_handler {
     #1. Check the chache for the user's credentials
     my $usrprojpass;
     my $pass_digest = Digest::SHA1::sha1_hex($redmine_pass);
-
-    return OK if ( $redmine_user eq $cfg->{RedmineSelfLogin} and $redmine_pass eq $cfg->{RedmineSelfPassword});
-
     if ($cfg->{RedmineCacheCredsMax}) {
         $usrprojpass = $cfg->{RedmineCacheCreds}->get($redmine_user.":".$project_id);
         return OK if ( defined $usrprojpass and ( $usrprojpass eq $pass_digest ));
@@ -189,17 +171,16 @@ sub authen_handler {
 
     # Pull the hashed password for the user from the DB
     my $dbh          = connect_database($r);
-    my $sth = $dbh->prepare("SELECT hashed_password, salt, auth_source_id FROM users WHERE users.status=1 AND login=? ");
+    my $sth = $dbh->prepare("SELECT hashed_password, auth_source_id FROM users WHERE users.status=1 AND login=? ");
     $sth->execute($redmine_user);
 
     # check the result from the DB query to try and authenticate the user
-    while ( my($hashed_password, $salt, $auth_source_id) = $sth->fetchrow_array ) {
+    while ( my($hashed_password, $auth_source_id) = $sth->fetchrow_array ) {
 
         # if there is an auth_source_id set, then skip this first part and authenticate using the auth_source
         unless($auth_source_id) {
             # otherwise, authenticate using the hashed password
-            my $salted_password = Digest::SHA1::sha1_hex($salt.$pass_digest);
-            if ( $hashed_password eq $salted_password ) {
+            if ( $hashed_password eq $pass_digest ) {
                 $ret = OK;
             }
         } elsif ($CanUseLDAPAuth) {
@@ -245,7 +226,7 @@ sub authen_handler {
     #
     # If the login was successful, add it to the cache
     #
-    if ($cfg->{RedmineCacheCredsMax} and $ret == OK) {
+    if ($cfg->{RedmineCacheCredsMax} and $ret) {
         if (defined $usrprojpass) {
             $cfg->{RedmineCacheCreds}->set($redmine_user.":".$project_id, $pass_digest);
         } else {
@@ -257,10 +238,6 @@ sub authen_handler {
                 $cfg->{RedmineCacheCredsCount} = 0;
             }
         }
-    }
-
-    if ($ret == AUTH_REQUIRED) {
-        $r->note_basic_auth_failure;
     }
 
     $ret;
@@ -283,7 +260,6 @@ sub authz_handler {
     my $project_id   = get_project_identifier($r);
     my $req_path     = get_requested_path($r);
     my $dbh          = connect_database($r);
-    my $cfg = Apache2::Module::get_config(__PACKAGE__, $r->server, $r->per_dir_config);
 
     #$r->log_error("Checking for path: $req_path");
 
@@ -291,7 +267,7 @@ sub authz_handler {
     #
     # 1. Check generic permissions for access
     #
-    if ( check_role_permissions( '1', $r ) == OK or ( $redmine_user eq $cfg->{RedmineSelfLogin} and check_permission(":browse_repository", $r) == OK ) ) {
+    if ( check_role_permissions( '1', $r ) == OK ) {
         #$r->log_error("generic permissions allows access");
         $ret = OK;
     }
@@ -300,16 +276,13 @@ sub authz_handler {
     #
     # 2. Check the role the user belongs to in the project for permissions
     #
-    my $sth = $dbh->prepare("SELECT roles.id FROM members, projects, users, roles, member_roles
+    my $sth = $dbh->prepare("SELECT roles.id FROM members, projects, users, roles
                     WHERE projects.id=members.project_id AND users.id=members.user_id
-                    AND member_roles.member_id=members.id
-                    AND roles.id=member_roles.role_id AND users.status=1 AND login=? AND identifier=?");
+                    AND roles.id=members.role_id AND users.status=1 AND login=? AND identifier=?");
     $sth->execute($redmine_user, $project_id);
     while ( my($role_id) = $sth->fetchrow_array ) {
         #$r->log_error("$redmine_user was found to be in role $role_id for project $project_id");
-        if ($ret == FORBIDDEN) {
-            $ret = check_role_permissions($role_id, $r);
-        }
+        $ret = check_role_permissions($role_id, $r);
     }
 
     $sth->finish();
@@ -324,7 +297,7 @@ sub check_role_permissions {
     my $role_id = shift;
     my $r = shift;
 
-    my $ret = FORBIDDEN;
+    my ($ret);
 
     my $redmine_user = $r->user;
     my $uri          = $r->uri;
@@ -333,7 +306,7 @@ sub check_role_permissions {
     my ($role_position);
 
     my $dbh          = connect_database($r);
-    my $sth = $dbh->prepare("SELECT position, permissions FROM roles WHERE roles.id=? ORDER BY position DESC");
+    my $sth = $dbh->prepare("SELECT position, permissions FROM roles WHERE roles.id=?");
 
     $sth->execute($role_id);
     #$r->log_error("Checking permissions for role $role_id");
@@ -353,19 +326,44 @@ sub check_role_permissions {
     #$r->log_error("User's role's position is $role_position");
 
     # now check if there is an explicit role definition 
-    $sth = $dbh->prepare("SELECT repository_controls.role_id, repository_controls.permissions, 
-        repository_controls.path FROM repository_controls, projects
+    $sth = $dbh->prepare("SELECT roles.position, repository_controls.role_id, repository_controls.permissions, 
+        repository_controls.path FROM repository_controls, projects, roles
         WHERE projects.id=repository_controls.project_id 
-        AND repository_controls.role_id=?
+        AND roles.id=repository_controls.role_id 
         AND identifier=?");
-    $sth->execute($role_id, $project_id);
+    $sth->execute($project_id);
 
     # check the result from the DB query to try and authenticate the user
+    my ($blocked_path); # used for when higher permissions block access
     #$r->log_error("Checking explicit permissions for role and path");
-    while ( $ret == FORBIDDEN and my($id, $permission, $path) = $sth->fetchrow_array ) {
-        if ( $role_id == $id and ($req_path =~ m{$path[/]?} or $req_path =~ m/!svn/) ) {
-            #$r->log_error("found permissions for $id - $permission, $path");
-            $ret = check_permission($permission, $r);
+    while ( my($position, $id, $permission, $path) = $sth->fetchrow_array ) {
+        if ( $req_path =~ m{$path[/]?} ) {
+            #$r->log_error("found permissions for $id - $position, $permission, $path");
+
+            if ( $position < $role_position or $role_id <= 2) {
+                # There is a specific permission defined for a higher level role, deny this role
+                $ret = FORBIDDEN;
+                $blocked_path = $path;
+                #$r->log_error("higher permission found, denying access, blocked path = $blocked_path");
+           } elsif (!defined($ret) or $ret != FORBIDDEN) {
+               #$r->log_error("Found permissions for the requested: $path");
+                if ( check_permission($permission, $r) == OK ) {
+                    #$r->log_error("User role is explicity allowed access");
+                    # user has explicit permission to perform the action requested
+                    $ret = OK;
+                } else {
+                    # otherwise it has been explicity denied
+                    #$r->log_error("User role is explicity denied access");
+                    $ret = FORBIDDEN;
+                }
+            } elsif (defined($blocked_path) and $blocked_path =~ m{$path} and $role_id == $id) {
+                #$r->log_error("Found a explicit permission overriding higher role");
+                if ( check_permission($permission, $r) == OK ) {
+                    $ret = OK;
+                } else {
+                    $ret = FORBIDDEN;
+                }
+            }
         }
     } 
 
@@ -386,13 +384,7 @@ sub get_requested_path {
     my $r = shift;
 
     my $location = $r->location;
-    my $path;
-
-    if ($r->uri =~ m{$location/*[^/]+(/.*)}) {
-        ($path) = $r->uri =~ m{$location/*[^/]+(/.*)};
-    } elsif ($r->uri =~ m{$location/*[^/]}) {
-        $path = "/";
-    }
+    my ($path) = $r->uri =~ m{$location/*[^/]+(/.*)};
 
     $path
 }
@@ -426,14 +418,13 @@ sub check_permission() {
     my $perm = shift;
     my $r    = shift;
 
-    if (defined $perm) {
-        if ( defined $read_only_methods{ $r->method } ) {
-            #$r->log_error("Checking permission '$perm' for read access");
-            return OK if ( $perm =~ /:browse_repository/ );
-        } else {
-            #$r->log_error("Checking permission '$perm' for write access");
-            return OK if ( $perm =~ /:commit_access/ );
-        }
+
+    if ( defined $read_only_methods{ $r->method } ) {
+        #$r->log_error("Checking permission '$perm' for read access");
+        return OK if ( $perm =~ /:browse_repository/ );
+    } else {
+        #$r->log_error("Checking permission '$perm' for write access");
+        return OK if ( $perm =~ /:commit_access/ );
     }
 
     return FORBIDDEN;
