@@ -276,13 +276,16 @@ sub authz_handler {
     #
     # 2. Check the role the user belongs to in the project for permissions
     #
-    my $sth = $dbh->prepare("SELECT roles.id FROM members, projects, users, roles
+    my $sth = $dbh->prepare("SELECT roles.id FROM members, projects, users, roles, member_roles
                     WHERE projects.id=members.project_id AND users.id=members.user_id
-                    AND roles.id=members.role_id AND users.status=1 AND login=? AND identifier=?");
+                    AND member_roles.member_id=members.id
+                    AND roles.id=member_roles.role_id AND users.status=1 AND login=? AND identifier=?");
     $sth->execute($redmine_user, $project_id);
     while ( my($role_id) = $sth->fetchrow_array ) {
         #$r->log_error("$redmine_user was found to be in role $role_id for project $project_id");
-        $ret = check_role_permissions($role_id, $r);
+        if ($ret == FORBIDDEN) {
+            $ret = check_role_permissions($role_id, $r);
+        }
     }
 
     $sth->finish();
