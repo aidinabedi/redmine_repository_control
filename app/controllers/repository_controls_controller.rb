@@ -33,6 +33,8 @@ class RepositoryControlsController < ApplicationController
         @project = Project.find(@control.project_id)
 
         if request.post?
+            params [ : repository_control ] [ : permissions ] = [ ]  if params! [ : repository_control ] [ : permissions ]
+            
             @control.update_attributes(params[:repository_control])
             flash[:notice] = l(:notice_successful_update)
             redirect_to :controller => 'projects', :action => 'settings', :tab => 'repository_controls', :id => @control.project_id
