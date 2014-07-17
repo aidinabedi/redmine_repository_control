@@ -389,6 +389,12 @@ sub get_requested_path {
     my $location = $r->location;
     my ($path) = $r->uri =~ m{$location/*[^/]+(/.*)};
 
+    if ($r->uri =~ m{$location/*[^/]+(/.*)}) {
+        ($path) = $r->uri =~ m{$location/*[^/]+(/.*)};
+    } elsif ($r->uri =~ m{$location/*[^/]}) {
+        $path = "/";
+    }
+
     $path
 }
 
