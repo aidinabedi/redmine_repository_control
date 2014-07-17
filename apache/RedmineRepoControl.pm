@@ -286,7 +286,7 @@ sub authz_handler {
                     users.status=1 AND login=? AND identifier=?");
     $sth->execute($redmine_user, $project_id);
     while ( my($role_id) = $sth->fetchrow_array ) {
-        #$r->log_error("$redmine_user was found to be in role $role_id for project $project_id");
+        $r->log_error("$redmine_user was found to be in role $role_id for project $project_id");
         if ($ret == FORBIDDEN) {
             $ret = check_role_permissions($role_id, $r);
         }
@@ -316,7 +316,7 @@ sub check_role_permissions {
     my $sth = $dbh->prepare("SELECT position, permissions FROM roles WHERE roles.id=?");
 
     $sth->execute($role_id);
-    #$r->log_error("Checking permissions for role $role_id");
+    $r->log_error("Checking permissions for role $role_id");
     while ( my($position, $permissions) = $sth->fetchrow_array ) {
         # check default permissions then explicit permissions which 
         # will overwrite the default permissions
@@ -431,15 +431,16 @@ sub check_permission() {
     my $perm = shift;
     my $r    = shift;
 
-
-    if ( defined $read_only_methods{ $r->method } ) {
-        #$r->log_error("Checking permission '$perm' for read access");
-        return OK if ( $perm =~ /:browse_repository/ );
-    } else {
-        #$r->log_error("Checking permission '$perm' for write access");
-        return OK if ( $perm =~ /:commit_access/ );
+    if ( defined $perm) {
+        if ( defined $read_only_methods{ $r->method } ) {
+            #$r->log_error("Checking permission '$perm' for read access");
+            return OK if ( $perm =~ /:browse_repository/ );
+        } else {
+            #$r->log_error("Checking permission '$perm' for write access");
+            return OK if ( $perm =~ /:commit_access/ );
+        }
     }
-
+    
     return FORBIDDEN;
 }
 
