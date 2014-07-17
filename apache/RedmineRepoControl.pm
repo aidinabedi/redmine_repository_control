@@ -344,7 +344,7 @@ sub check_role_permissions {
     my ($blocked_path); # used for when higher permissions block access
     #$r->log_error("Checking explicit permissions for role and path");
     while ( my($position, $id, $permission, $path) = $sth->fetchrow_array ) {
-        if ( $req_path =~ m{$path[/]?} ) {
+        if ( $req_path =~ m/^\/*$path(?:\/.*)?$/ ) {
             #$r->log_error("found permissions for $id - $position, $permission, $path");
 
             if ( $position < $role_position or $role_id <= 2) {
@@ -363,12 +363,20 @@ sub check_role_permissions {
                     #$r->log_error("User role is explicity denied access");
                     $ret = FORBIDDEN;
                 }
-            } elsif (defined($blocked_path) and $blocked_path =~ m{$path} and $role_id == $id) {
+            } elsif (defined($blocked_path) and $blocked_path =~ m/^\/*$path(?:\/.*)?$/ and $role_id == $id) {
                 #$r->log_error("Found a explicit permission overriding higher role");
                 if ( check_permission($permission, $r) == OK ) {
                     $ret = OK;
                 } else {
                     $ret = FORBIDDEN;
+                }
+            } elsif ((!defined($blocked_path) or length($path) > length($blocked_path)) and $role_id == $id) {
+                $r->log_error("Found a explicit permission");
+                if ( check_permission($permission, $r) == OK ) {
+                    $ret = OK;
+                } else {
+                    $ret = FORBIDDEN;
+                    $blocked_path = defined($blocked_path) ? $blocked_path : $path;
                 }
             }
         }
