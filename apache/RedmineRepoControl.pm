@@ -323,7 +323,7 @@ sub check_role_permissions {
 
         $role_position = $position;
 
-        if ( check_permission($permissions, $r) == OK ) {
+        if ( ( $role_id > 2 or is_public_project( get_project_identifier($r), $r ) ) and check_permission($permissions, $r) == OK ) {
             # the role has access to perform the requested operation
             $ret = OK;
             #$r->log_error("Users role has default access");
